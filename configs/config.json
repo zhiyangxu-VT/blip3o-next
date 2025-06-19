@@ -1,0 +1,87 @@
+{
+  "_name_or_path": "",
+  "architectures": [
+    "RQVAESIGLIPTransformer"
+  ],
+  "hidden_size": 1024,
+  "model_type": "rqvaesigliptransformer_model",
+  "rqtransformer": {
+    "architectures": [
+      "RQTransformer"
+    ],
+    "block_size": [
+      16,
+      16,
+      4
+    ],
+    "embed_dim": 3584,
+    "embed_dim_out": 896,
+    "head": {
+      "block": {
+        "n_head": 32
+      },
+      "n_layer": 6
+    },
+    "input_embed_dim_1": 1024,
+    "input_embed_dim_2": 896,
+    "model_type": "rqtransformer_model",
+    "torch_dtype": "float32",
+    "transformers_version": "4.36.2",
+    "vocab_size": 16384
+  }
+  ,
+  "rqvaesiglip": {
+    "architectures": [
+      "RQVAESiglip"
+    ],
+    "bottleneck_type": "rq",
+    "checkpointing": true,
+    "ckpt_path": null,
+    "code_shape": [
+      16,
+      16,
+      4
+    ],
+    "ddconfig": {
+      "attn_resolutions": [
+        16
+      ],
+      "ch": 128,
+      "ch_mult": [
+        1,
+        1,
+        2,
+        2,
+        4
+      ],
+      "double_z": false,
+      "dropout": 0.0,
+      "in_channels": 3,
+      "num_res_blocks": 2,
+      "out_ch": 3,
+      "resolution": 256,
+      "z_channels": 256
+    },
+    "decay": 0.99,
+    "embed_dim": 1024,
+    "hidden_size": 1024,
+    "ignore_keys": null,
+    "latent_loss_weight": 0.25,
+    "latent_shape": [
+      16,
+      16,
+      1024
+    ],
+    "loss_type": "mse",
+    "model_type": "rqvaesiglip_model",
+    "n_embed": 16384,
+    "pretrained_model": "google/siglip-large-patch16-256",
+    "restart_unused_codes": true,
+    "shared_codebook": true,
+    "torch_dtype": "float32",
+    "transformers_version": "4.36.2"
+  }
+  ,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.36.2"
+}
