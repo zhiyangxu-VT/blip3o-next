@@ -18,11 +18,11 @@ This paper presents UniFork, a Y-shaped architecture for unified image generatio
 
 - We analyze task-specific modality alignment patterns in expert models, highlighting the differing needs of image understanding and generation, and providing insights for unified model design.
 
-  ![analysis](/Users/teng/Desktop/UniFork_/assets/analysis.png)
+  ![analysis](assets/analysis.png)
 
 - We propose UniFork, a Y-shaped architecture that decouples task-specific learning in the later layers while retaining shared semantic representation learning in the early layers. This design enables cross-task learning and alleviates performance conflicts between tasks.
 
-  <img src="/Users/teng/Desktop/UniFork_/assets/method.png" alt="method" style="zoom: 20%;" />
+  <img src="assets/method.png" alt="method" style="zoom: 20%;" />
 
 ## Installation
 
