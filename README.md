@@ -1,5 +1,13 @@
 # UniFork: Exploring Modality Alignment for Unified Multimodal Understanding and Generation
 
+<p align="left">
+  <a href="https://arxiv.org/abs/2506.17202">
+    <img
+      src="https://img.shields.io/badge/UniFork-Paper-red?logo=arxiv&logoColor=red"
+      alt="BAGEL Paper on arXiv"
+    />
+  </a>
+</p>
 
 
 Official implementation of UniFork: Exploring Modality Alignment for Unified Multimodal Understanding and Generation
