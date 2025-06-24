@@ -361,7 +361,7 @@ def build_datasets(
             print(f"[combine_gen_datasets] Building dataset: {dataset_name}")
             dataset_gen = DatasetCeph(tokenizer, data_args.image_processor, dataset_name=dataset_name)
             all_datasets.append(dataset_gen)
-    elif data_args.training_stage == 3.0:  
+    elif data_args.training_stage == 3.0 or data_args.training_stage == 4.0:  
         dataset_names = ['your/dataset/name/list']
         for dataset_name in dataset_names:
             print(f"[combine_gen_datasets] Building dataset: {dataset_name}")
@@ -372,7 +372,7 @@ def build_datasets(
     if data_args.training_stage == 1.5:
         dataset_und = DatasetCeph(tokenizer, data_args, dataset_name='und_coyo')
         all_datasets.append(dataset_und)
-    elif data_args.training_stage == 2.0 or data_args.training_stage == 3.0:
+    elif data_args.training_stage == 2.0 or data_args.training_stage == 3.0 or data_args.training_stage == 5.0:
         for ds_name, ds_info in ds_config.items():
             annotation_path = ds_info["annotation"] 
             root_path = ds_info.get("root", "")   
@@ -527,29 +527,31 @@ def train(attn_implementation=None):
         model.config.tokenizer_padding_side = tokenizer.padding_side
         model.config.tokenizer_model_max_length = tokenizer.model_max_length
 
+        model.model.vision_tower.vision_tower.eval()
+        
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
-        if model_args.tune_mm_mlp_adapter:
+        if model_args.tune_mm_mlp_adapter or data_args.training_stage == 1.5:
             model.requires_grad_(False)
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
-
-        # For stage 3
-        # model.model.requires_grad_(False)
-        ###################
-        model.model.vision_tower.vision_tower.eval()
-        model.model.vision_tower.vision_tower.requires_grad_(False)
-        model.model.vision_tower.vision_tower.rqtransformer.requires_grad_(True)
-        # for p in model.model.gen_fork_layers.parameters():
-        #     p.requires_grad = True
-        # for p in model.model.norm_gen.parameters():
-        #     p.requires_grad = True
-        ###############
-        for p in model.model.layers[12:].parameters():
-            p.requires_grad = True
-        for p in model.model.embed_tokens.parameters():
-            p.requires_grad = True
-        for p in model.model.norm.parameters():
-            p.requires_grad = True
+        elif data_args.training_stage == 2.0 or data_args.training_stage == 3.0:
+            model.requires_grad_(True)
+            model.model.vision_tower.vision_tower.requires_grad_(False)
+            model.model.vision_tower.vision_tower.rqtransformer.requires_grad_(True)
+        elif data_args.training_stage == 4.0:
+            model.requires_grad_(False)
+            model.model.vision_tower.vision_tower.rqtransformer.requires_grad_(True)
+            for p in model.model.gen_fork_layers.parameters():
+                p.requires_grad = True
+            for p in model.model.norm_gen.parameters():
+                p.requires_grad = True
+        elif data_args.training_stage == 5.0:
+            model.requires_grad_(False)
+            for p in model.model.layers[12:].parameters():
+                p.requires_grad = True
+            for p in model.model.norm.parameters():
+                p.requires_grad = True
+            
             
         model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
         if training_args.freeze_mm_mlp_adapter:

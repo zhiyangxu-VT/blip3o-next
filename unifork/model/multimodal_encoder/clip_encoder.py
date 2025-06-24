@@ -15,11 +15,11 @@ class CLIPVisionTower(nn.Module):
         self.vision_tower_name = vision_tower
         self.select_feature = getattr(args, 'mm_vision_select_feature', 'same')
 
-        # if not delay_load:
-        #     self.load_model()
-        # elif getattr(args, 'unfreeze_mm_vision_tower', False):
-        #     self.load_model()
-        self.load_model()
+        if not delay_load:
+            self.load_model()
+        elif getattr(args, 'unfreeze_mm_vision_tower', False):
+            self.load_model()
+        # self.load_model()
         # else:
         #     self.cfg_only = CLIPVisionConfig.from_pretrained(self.vision_tower_name)
 
@@ -34,8 +34,8 @@ class CLIPVisionTower(nn.Module):
             lambda module: module.reset_parameters() if hasattr(module, "reset_parameters") else None)
 
         # for stage 2/3
-        self.vision_tower.eval()
-        self.vision_tower.requires_grad_(False)
+        # self.vision_tower.eval()
+        # self.vision_tower.requires_grad_(False)
         # for param in self.vision_tower.rqtransformer.parameters():
         #     param.requires_grad = True
         

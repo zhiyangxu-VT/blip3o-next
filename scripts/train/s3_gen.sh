@@ -42,7 +42,7 @@ deepspeed  --num_nodes 2 --master_addr $MASTER_ADDR \
    unifork/train/train_mem.py \
     --deepspeed ./scripts/zero0.json \
     --model_name_or_path your/model/path \
-    --training_stage 3.0 \
+    --training_stage 4.0 \
     --version v1 \
     --data_meta_path /pretrain/annotation/path \
     --label_mapping_path configs/imagenet_label_mapping \
