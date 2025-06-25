@@ -532,6 +532,7 @@ def train(attn_implementation=None):
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
         if model_args.tune_mm_mlp_adapter or data_args.training_stage == 1.5:
             model.requires_grad_(False)
+            model.model.vision_tower.vision_tower.rqtransformer.requires_grad_(True)
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = True
         elif data_args.training_stage == 2.0 or data_args.training_stage == 3.0:
