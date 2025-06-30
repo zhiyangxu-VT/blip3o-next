@@ -7,6 +7,11 @@ import torch.nn.functional as F
 import torch
 import transformers
 import random
+from torch.utils.data import Dataset
+import torch
+import random
+from datasets import load_dataset
+from torchvision.transforms import v2
 
 import os
 import sys
@@ -26,7 +31,7 @@ from unifork.train.llava_trainer import LLaVATrainer
 from unifork import conversation as conversation_lib
 from unifork.model import *
 from transformers import logging
-from data_utils import DatasetCeph , DatasetIntern
+# from data_utils import DatasetCeph , DatasetIntern
 
 
 local_rank = None
@@ -193,59 +198,118 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
         trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
 
 
+# class ImageNetGen(ImageFolder):
+#     def __init__(
+#         self, 
+#         root: str, 
+#         version: str, 
+#         tokenizer: Any, 
+#         image_processor: Any, 
+#         transform: Optional[Callable] = None, 
+#         target_transform: Optional[Callable] = None, 
+#         loader: Callable[[str], Any] = default_loader,
+#         is_valid_file: Optional[Callable[[str], bool]] = None, 
+#     ):
+#         super().__init__(
+#             root,
+#             transform=transform,
+#             target_transform=target_transform,
+#             loader=loader,
+#             is_valid_file=is_valid_file,
+#         )
 
-class ImageNetGen(ImageFolder):
+#         self.preprocess_version = version
+#         self.tokenizer = tokenizer
+#         self.image_processor = image_processor
+        
+    
+#     def __getitem__(self, index: int) -> Tuple[Any, str]:
+#         """
+#         Args:
+#             index (int): Index
+
+#         Returns:
+#             tuple: (sample, labels_text) where labels_text is the formatted text label.
+#         """
+#         path, target = self.samples[index]
+#         sample = self.loader(path)
+#         if self.transform is not None:
+#             sample = self.transform(sample)
+#         if self.target_transform is not None:
+#             target = self.target_transform(target)
+        
+#         image = self.image_processor.preprocess(sample, return_tensors='pt', gen_task=True)['pixel_values'][0]
+#         # Get class name and formatted text
+#         class_name = IMAGENET_CLASSNAMES[target]
+#         template = random.choice(OPENAI_IMAGENET_TEMPLATES)
+#         labels_text = template(class_name)
+        
+#         labels_text = "<|im_start|>{}".format(labels_text)
+#         prompt_id = self.tokenizer(labels_text).input_ids
+#         input_ids = torch.tensor(prompt_id + [IMAGE_TOKEN_INDEX])
+#         labels = torch.tensor([IGNORE_INDEX]*len(prompt_id) + [IMAGE_TOKEN_INDEX])
+
+#         return dict(input_ids=input_ids, labels=labels, image=image, is_gen=True)
+
+
+class ImageNetGen(Dataset):
     def __init__(
-        self, 
-        root: str, 
-        version: str, 
-        tokenizer: Any, 
-        image_processor: Any, 
-        transform: Optional[Callable] = None, 
-        target_transform: Optional[Callable] = None, 
-        loader: Callable[[str], Any] = default_loader,
-        is_valid_file: Optional[Callable[[str], bool]] = None, 
+        self,
+        hf_data_path: str,
+        tokenizer: Any,
+        image_processor: Any,
+        version: str = "default",
+        split: str = "train",
+        **load_dataset_kwargs
     ):
-        super().__init__(
-            root,
-            transform=transform,
-            target_transform=target_transform,
-            loader=loader,
-            is_valid_file=is_valid_file,
+        """
+        Args:
+            hf_data_path (str): HuggingFace dataset repo path (e.g., 'imagenet-1k' or custom path).
+            tokenizer (Any): Tokenizer instance.
+            image_processor (Any): Image processor (e.g., CLIP processor).
+            version (str): Preprocessing version/tag.
+            split (str): Split to load, e.g. "train" or "validation".
+            **load_dataset_kwargs: Any additional arguments for `load_dataset`.
+        """
+        super().__init__()
+        self.dataset = load_dataset(
+            hf_data_path,
+            split=split,
+            **load_dataset_kwargs
         )
-
         self.preprocess_version = version
         self.tokenizer = tokenizer
         self.image_processor = image_processor
-        
-    
-    def __getitem__(self, index: int) -> Tuple[Any, str]:
-        """
-        Args:
-            index (int): Index
+        self.target_transform = v2.Compose(
+        [
+            v2.Resize(512),
+            v2.CenterCrop(512),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize([0.5], [0.5]),
+        ]
+    )
 
-        Returns:
-            tuple: (sample, labels_text) where labels_text is the formatted text label.
-        """
-        path, target = self.samples[index]
-        sample = self.loader(path)
-        if self.transform is not None:
-            sample = self.transform(sample)
-        if self.target_transform is not None:
-            target = self.target_transform(target)
-        
-        image = self.image_processor.preprocess(sample, return_tensors='pt', gen_task=True)['pixel_values'][0]
-        # Get class name and formatted text
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int):
+        # Most HF ImageNet datasets have fields like 'image' (PIL.Image) and 'label' (int)
+        sample = self.dataset[idx]
+        image = sample['image'].convert("RGB")
+        target = sample['label']
+        # Preprocess image
+        image_tensor = self.image_processor.preprocess(image, return_tensors='pt', gen_task=True)['pixel_values'][0]
+        target_image_tensor = self.target_transform(image)
+        # Prepare prompt and labels as before
         class_name = IMAGENET_CLASSNAMES[target]
         template = random.choice(OPENAI_IMAGENET_TEMPLATES)
-        labels_text = template(class_name)
-        
-        labels_text = "<|im_start|>{}".format(labels_text)
+        labels_text = "<|im_start|>{}".format(template(class_name))
         prompt_id = self.tokenizer(labels_text).input_ids
         input_ids = torch.tensor(prompt_id + [IMAGE_TOKEN_INDEX])
         labels = torch.tensor([IGNORE_INDEX]*len(prompt_id) + [IMAGE_TOKEN_INDEX])
 
-        return dict(input_ids=input_ids, labels=labels, image=image, is_gen=True)
+        return dict(input_ids=input_ids, labels=labels, image=image_tensor, target_image=target_image_tensor, is_gen=True)
 
 
 class ImageNetUnd(ImageFolder):
@@ -324,6 +388,8 @@ class DataCollatorForCombinedDataset(object):
         
         images_gen = [item['image'] for item in instances if item['is_gen']]
         images_und = [item['image'] for item in instances if not item['is_gen']]
+        tar_images_gen = [item['target_image'] for item in instances if item['is_gen']]
+        tar_images_gen = torch.stack(tar_images_gen, dim=0) if tar_images_gen else None
         images_gen = torch.stack(images_gen, dim=0) if images_gen else None
         images_und = torch.stack(images_und, dim=0) if images_und else None
         is_gen = torch.tensor([item['is_gen'] for item in instances], dtype=torch.bool)
@@ -334,6 +400,7 @@ class DataCollatorForCombinedDataset(object):
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
             is_gen = is_gen,
             images_gen = images_gen,
+            tar_images_gen = tar_images_gen,
             images_und = images_und
         )
         
@@ -396,15 +463,16 @@ def build_datasets(
 def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                                 data_args,
                                 version,
-                                per_device_train_batch_size) -> Dict:
+                                per_device_train_batch_size,) -> Dict:
     
     if data_args.training_stage == 1.0:
-        all_datasets = []
-        train_dataset_und = ImageNetUnd(data_args.imagenet_root, version, tokenizer, data_args.image_processor)
-        all_datasets.append(train_dataset_und)
-        train_dataset_gen = ImageNetGen(data_args.imagenet_root, version, tokenizer, data_args.image_processor)
-        all_datasets.append(train_dataset_gen)
-        train_dataset = ConcatDataset(all_datasets)
+        # all_datasets = []
+        # train_dataset_und = ImageNetUnd(data_args.imagenet_root, version, tokenizer, data_args.image_processor)
+        # all_datasets.append(train_dataset_und)
+        train_dataset_gen = ImageNetGen(data_args.imagenet_root, tokenizer, data_args.image_processor, version=version, split='train')
+        # all_datasets.append(train_dataset_gen)
+        # train_dataset = ConcatDataset(all_datasets)
+        train_dataset = train_dataset_gen
     else:
         train_dataset = build_datasets(data_args=data_args,
                                        tokenizer=tokenizer,
@@ -571,7 +639,7 @@ def train(attn_implementation=None):
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args,
                                               version=model_args.version,
-                                              per_device_train_batch_size = training_args.per_device_train_batch_size)
+                                              per_device_train_batch_size = training_args.per_device_train_batch_size,)
     
 
     print("Training parameters:")

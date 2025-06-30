@@ -54,6 +54,11 @@ QWEN2_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # See all Qwen2 models at https://huggingface.co/models?filter=qwen2
 ]
 
+from dataclasses import dataclass
+
+@dataclass
+class CustomCausalLMOutputWithPast(CausalLMOutputWithPast):
+    image_hidden_states: Optional[Tuple] = None
 
 # Copied from transformers.models.llama.modeling_llama._get_unpad_data
 def _get_unpad_data(attention_mask):
@@ -1316,37 +1321,37 @@ class Qwen2Model(Qwen2PreTrainedModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
-        for decoder_layer in self.gen_fork_layers:
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
+        # for decoder_layer in self.gen_fork_layers:
+        #     if output_hidden_states:
+        #         all_hidden_states += (hidden_states,)
 
-            if self.gradient_checkpointing and self.training:
-                layer_outputs = self._gradient_checkpointing_func(
-                    decoder_layer.__call__,
-                    hidden_states,
-                    attention_mask,
-                    position_ids,
-                    past_key_values,
-                    output_attentions,
-                    use_cache,
-                )
-            else:
-                layer_outputs = decoder_layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_value=past_key_values,
-                    output_attentions=output_attentions,
-                    use_cache=use_cache,
-                )
+        #     if self.gradient_checkpointing and self.training:
+        #         layer_outputs = self._gradient_checkpointing_func(
+        #             decoder_layer.__call__,
+        #             hidden_states,
+        #             attention_mask,
+        #             position_ids,
+        #             past_key_values,
+        #             output_attentions,
+        #             use_cache,
+        #         )
+        #     else:
+        #         layer_outputs = decoder_layer(
+        #             hidden_states,
+        #             attention_mask=attention_mask,
+        #             position_ids=position_ids,
+        #             past_key_value=past_key_values,
+        #             output_attentions=output_attentions,
+        #             use_cache=use_cache,
+        #         )
 
-            hidden_states = layer_outputs[0]
+        #     hidden_states = layer_outputs[0]
 
-            if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+        #     if use_cache:
+        #         next_decoder_cache = layer_outputs[2 if output_attentions else 1]
 
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+        #     if output_attentions:
+        #         all_self_attns += (layer_outputs[1],)
 
         hidden_states = self.norm_gen(hidden_states)
 
@@ -1690,12 +1695,13 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel):
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        return CausalLMOutputWithPast(
+        return CustomCausalLMOutputWithPast(
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            image_hidden_states=image_hidden_states
         )
 
     @add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)

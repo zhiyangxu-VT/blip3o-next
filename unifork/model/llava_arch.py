@@ -14,12 +14,14 @@
 
 
 from abc import ABC, abstractmethod
-
+import math
 import torch
 import torch.nn as nn
 import random
-from .multimodal_encoder.builder import build_vision_tower
+from .multimodal_encoder.builder import build_vision_tower, build_sana, build_vae
 from .projector import build_vision_projector
+from diffusers import AutoencoderDC, FlowMatchEulerDiscreteScheduler, SanaTransformer2DModel
+from diffusers.models.normalization import RMSNorm
 
 from unifork.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
@@ -33,8 +35,24 @@ class LlavaMetaModel:
 
         if hasattr(config, "mm_vision_tower"):
             self.vision_tower = build_vision_tower(config, delay_load=True)
+            self.sana = build_sana(config)
+            self.sana_vae = build_vae(config)
             self.mm_projector = build_vision_projector(config)
-
+            
+            norm = RMSNorm(2304, eps=1e-5, elementwise_affine=True)
+            with torch.no_grad():
+                norm.weight.fill_(math.sqrt(5.5))
+            self.diffusion_connector = nn.Sequential(
+                nn.Linear(config.hidden_size, 2304),
+                nn.GELU(approximate="tanh"),
+                nn.Linear(2304, 2304),
+                norm,
+            )
+            
+            self.noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+                "Efficient-Large-Model/Sana_1600M_512px_diffusers", subfolder="scheduler"
+            )
+            self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained("Efficient-Large-Model/Sana_1600M_512px_diffusers", subfolder="scheduler")
             if 'unpad' in getattr(config, 'mm_patch_merge_type', ''):
                 self.image_newline = nn.Parameter(
                     torch.empty(config.hidden_size, dtype=self.dtype)
@@ -47,6 +65,22 @@ class LlavaMetaModel:
         if vision_tower is not None:
             vision_tower.to(self.device)
         return vision_tower
+    
+    def get_sana(self):
+        sana = getattr(self, 'sana', None)
+        if type(sana) is list:
+            sana = sana[0]
+        if sana is not None:
+            sana.to(self.device)
+        return sana
+    
+    def get_sana_vae(self):
+        sana_vae = getattr(self, 'sana_vae', None)
+        if type(sana_vae) is list:
+            sana_vae = sana_vae[0]
+        if sana_vae is not None:
+            sana_vae.to(self.device)
+        return sana_vae
 
     def initialize_vision_modules(self, model_args, fsdp=None):
         vision_tower = model_args.vision_tower
@@ -70,6 +104,36 @@ class LlavaMetaModel:
             else:
                 vision_tower = self.vision_tower
             vision_tower.load_model()
+            
+        if self.get_sana() is None:
+            sana = build_sana(model_args)
+            self.noise_scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+                "Efficient-Large-Model/Sana_1600M_512px_diffusers", subfolder="scheduler"
+            )
+            self.scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained("Efficient-Large-Model/Sana_1600M_512px_diffusers", subfolder="scheduler")
+
+            if fsdp is not None and len(fsdp) > 0:
+                self.sana = [sana]
+            else:
+                self.sana = sana
+        else:
+            if fsdp is not None and len(fsdp) > 0:
+                sana = self.sana[0]
+            else:
+                sana = self.sana
+            
+        if self.get_sana_vae() is None:
+            sana_vae = build_vae(model_args)
+
+            if fsdp is not None and len(fsdp) > 0:
+                self.sana_vae = [sana_vae]
+            else:
+                self.sana_vae = sana_vae
+        else:
+            if fsdp is not None and len(fsdp) > 0:
+                sana_vae = self.sana_vae[0]
+            else:
+                sana_vae = self.sana_vae
 
         self.config.use_mm_proj = True
 
@@ -84,6 +148,21 @@ class LlavaMetaModel:
         else:
             # In case it is frozen by LoRA
             for p in self.mm_projector.parameters():
+                p.requires_grad = True
+        
+        if getattr(self, 'diffusion_connector', None) is None:
+            norm = RMSNorm(2304, eps=1e-5, elementwise_affine=True)
+            with torch.no_grad():
+                norm.weight.fill_(math.sqrt(5.5))
+            self.diffusion_connector = nn.Sequential(
+                nn.Linear(self.config.hidden_size, 2304),
+                nn.GELU(approximate="tanh"),
+                nn.Linear(2304, 2304),
+                norm,
+            )
+        else:
+            # In case it is frozen by LoRA
+            for p in self.diffusion_connector.parameters():
                 p.requires_grad = True
 
 

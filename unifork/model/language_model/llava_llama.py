@@ -35,6 +35,19 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
 
 from ..llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
+from diffusers import AutoencoderDC, FlowMatchEulerDiscreteScheduler, SanaTransformer2DModel
+from diffusers.training_utils import compute_density_for_timestep_sampling, compute_loss_weighting_for_sd3
+
+
+# def randn_tensor(shape, generator=None, device=None, dtype=None):
+#     """
+#     Generate a tensor of random normal noise.
+#     """
+#     if isinstance(generator, list):
+#         generator = generator[0]
+#     if generator is None:
+#         return torch.randn(shape, device=device, dtype=dtype)
+#     return torch.randn(shape, generator=generator, device=device, dtype=dtype)
 
 
 class LlavaConfig(Qwen2Config):
@@ -63,9 +76,19 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
     def get_model(self):
         return self.model
 
+    def get_sigmas(self, timesteps, device, n_dim=4, dtype=torch.float32):
+        sigmas = self.model.noise_scheduler.sigmas.to(device=device, dtype=dtype)
+        schedule_timesteps = self.model.noise_scheduler.timesteps.to(device)
+        timesteps = timesteps.to(device)
+        step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
 
+        sigma = sigmas[step_indices].flatten()
+        while len(sigma.shape) < n_dim:
+            sigma = sigma.unsqueeze(-1)
+        return sigma
+    
     # _train
-    def forward_train(
+    def forward(
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
@@ -78,15 +101,15 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         output_hidden_states: Optional[bool] = None,
         images_gen: Optional[torch.FloatTensor] = None,
         images_und: Optional[torch.FloatTensor] = None,
+        tar_images_gen: Optional[torch.FloatTensor] = None,
         is_gen: Optional[bool] = None,
         image_sizes: Optional[List[List[int]]] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         outputs_gen, outputs_und = None, None
-        
         if inputs_embeds is None:
-            
+                        
             if images_und is not None:
                 is_und = ~is_gen
                 attention_mask_und = attention_mask[is_und]
@@ -176,7 +199,46 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                     output_hidden_states=output_hidden_states,
                     return_dict=return_dict
                 )
-            
+                # outputs_gen.image_hidden_states
+                
+                # diffusion loss
+                vae = self.model.get_sana_vae()
+                latents = vae.encode(tar_images_gen).latent
+                if "shift_factor" in vae.config and vae.config.shift_factor is not None:
+                    latents = latents - vae.config.shift_factor
+                latents = latents * vae.config.scaling_factor
+                noise = torch.randn_like(latents, device=latents.device)
+                weighting_scheme = "uniform"
+                u = compute_density_for_timestep_sampling(
+                    weighting_scheme=weighting_scheme,
+                    batch_size=latents.shape[0],
+                    logit_mean=0.0,
+                    logit_std=1.0,
+                    mode_scale=1.29,
+                )
+                indices = (u * self.model.noise_scheduler.config.num_train_timesteps).long()
+                timesteps = self.model.noise_scheduler.timesteps[indices].to(device=latents.device)
+                sigmas = self.get_sigmas(timesteps, latents.device, n_dim=latents.ndim, dtype=latents.dtype)
+                noisy_latents = (1.0 - sigmas) * latents + sigmas * noise
+
+                
+                sana = self.model.get_sana()
+                
+                diffusion_pred = sana(
+                    hidden_states=noisy_latents,
+                    timestep=timesteps,
+                    encoder_hidden_states=self.model.diffusion_connector(outputs_gen.image_hidden_states),
+                    encoder_attention_mask=None,
+                ).sample
+
+                target = noise - latents
+                weighting = compute_loss_weighting_for_sd3(weighting_scheme=weighting_scheme, sigmas=sigmas)
+                diff_loss = torch.mean(
+                    (weighting.float() * (diffusion_pred.float() - target.float()) ** 2).reshape(target.shape[0], -1),
+                    1,
+                )
+                diff_loss = diff_loss.mean()
+                
             
         logits = outputs_gen.logits if outputs_gen is not None else outputs_und.logits
 
@@ -185,7 +247,7 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
             if outputs_gen is not None and outputs_und is not None
             else (outputs_gen.loss if outputs_gen is not None else outputs_und.loss)
         )
-
+        loss += diff_loss
         device = attention_mask.device
         
         return CausalLMOutputWithPast(
@@ -193,83 +255,83 @@ class LlavaQwen2ForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
             logits=logits.to(device) if logits is not None else None)
      
      
-    def forward_gen(
-        self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
+    # def forward_gen(
+    #     self,
+    #     input_ids: torch.LongTensor = None,
+    #     attention_mask: Optional[torch.Tensor] = None,
+    #     position_ids: Optional[torch.LongTensor] = None,
+    #     past_key_values: Optional[List[torch.FloatTensor]] = None,
+    #     inputs_embeds: Optional[torch.FloatTensor] = None,
+    #     labels: Optional[torch.LongTensor] = None,
+    #     use_cache: Optional[bool] = None,
+    #     output_attentions: Optional[bool] = None,
+    #     output_hidden_states: Optional[bool] = None,
+    #     return_dict: Optional[bool] = None,
+    # ) -> Union[Tuple, CausalLMOutputWithPast]:
 
 
-        return super().forward_gen(
-            input_ids = input_ids,
-            attention_mask = attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds = inputs_embeds,
-            labels = labels,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict
-        )
+    #     return super().forward_gen(
+    #         input_ids = input_ids,
+    #         attention_mask = attention_mask,
+    #         position_ids=position_ids,
+    #         past_key_values=past_key_values,
+    #         inputs_embeds = inputs_embeds,
+    #         labels = labels,
+    #         use_cache=use_cache,
+    #         output_attentions=output_attentions,
+    #         output_hidden_states=output_hidden_states,
+    #         return_dict=return_dict
+    #     )
          
     # _und    
     # used for inference
-    def forward(
-        self,
-        input_ids: torch.LongTensor = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[List[torch.FloatTensor]] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        images: Optional[torch.FloatTensor] = None,
-        image_sizes: Optional[List[List[int]]] = None,
-        return_dict: Optional[bool] = None,
-        cache_position=None,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
+    # def forward(
+    #     self,
+    #     input_ids: torch.LongTensor = None,
+    #     attention_mask: Optional[torch.Tensor] = None,
+    #     position_ids: Optional[torch.LongTensor] = None,
+    #     past_key_values: Optional[List[torch.FloatTensor]] = None,
+    #     inputs_embeds: Optional[torch.FloatTensor] = None,
+    #     labels: Optional[torch.LongTensor] = None,
+    #     use_cache: Optional[bool] = None,
+    #     output_attentions: Optional[bool] = None,
+    #     output_hidden_states: Optional[bool] = None,
+    #     images: Optional[torch.FloatTensor] = None,
+    #     image_sizes: Optional[List[List[int]]] = None,
+    #     return_dict: Optional[bool] = None,
+    #     cache_position=None,
+    # ) -> Union[Tuple, CausalLMOutputWithPast]:
 
-        if inputs_embeds is None:
-            (
-                input_ids,
-                position_ids,
-                attention_mask,
-                past_key_values,
-                inputs_embeds,
-                labels
-            ) = self.prepare_inputs_labels_for_multimodal(
-                input_ids,
-                position_ids,
-                attention_mask,
-                past_key_values,
-                labels,
-                images,
-                image_sizes
-            )
+    #     if inputs_embeds is None:
+    #         (
+    #             input_ids,
+    #             position_ids,
+    #             attention_mask,
+    #             past_key_values,
+    #             inputs_embeds,
+    #             labels
+    #         ) = self.prepare_inputs_labels_for_multimodal(
+    #             input_ids,
+    #             position_ids,
+    #             attention_mask,
+    #             past_key_values,
+    #             labels,
+    #             images,
+    #             image_sizes
+    #         )
 
-        return super().forward(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            labels=labels,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict
-        )
+    #     return super().forward(
+    #         input_ids=input_ids,
+    #         attention_mask=attention_mask,
+    #         position_ids=position_ids,
+    #         past_key_values=past_key_values,
+    #         inputs_embeds=inputs_embeds,
+    #         labels=labels,
+    #         use_cache=use_cache,
+    #         output_attentions=output_attentions,
+    #         output_hidden_states=output_hidden_states,
+    #         return_dict=return_dict
+    #     )
 
     @torch.no_grad()
     def generate(
